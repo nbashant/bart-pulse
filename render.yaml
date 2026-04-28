@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bart-pulse
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BART_API_KEY
+        sync: false

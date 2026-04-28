@@ -1,0 +1,12 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+artifacts/
+.artifacts/
+tsconfig.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+npm-debug.log*
