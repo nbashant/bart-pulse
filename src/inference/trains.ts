@@ -55,7 +55,7 @@ export function inferTrains(stationDepartures: StationDepartures, receivedAt: nu
       if (confidence < 0.32) return;
       trains.push({
         ...representative,
-        id: `${key}:${Math.round(average(cluster.map((item) => item.timeToDestination)) / 30)}:${clusterIndex}`,
+        id: `${key}:${clusterIndex}`,
         confidence,
         members: cluster.length,
         inferred: true,

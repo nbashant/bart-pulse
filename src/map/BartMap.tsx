@@ -1,6 +1,6 @@
 import { Maximize2, Minus, Plus } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LINE_META, PRIORITY_LABEL_STATIONS, shortStationName, TERMINAL_STATIONS, TRANSFER_STATIONS } from '../data/gtfs';
+import { LINE_META, PRIORITY_LABEL_STATIONS, shortStationName, TERMINAL_STATIONS } from '../data/gtfs';
 import type { InferredTrain, LineLabel } from '../data/types';
 import {
   boundsForLine,
@@ -9,9 +9,11 @@ import {
   MAP_HEIGHT,
   MAP_WIDTH,
   networkGeometry,
-  routePoint,
-  routePointForStops,
-  stationLabelPriority,
+  routeDistancePoint,
+  routeDistancePointForStops,
+  routePointAtDistance,
+  stationPointForLine,
+  type RouteDistancePoint,
 } from '../geometry/network';
 import { fitBounds, type Bounds } from '../geometry/projection';
 import { currentProgress } from '../inference/trains';
@@ -29,7 +31,15 @@ export type MapFocusInput =
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 type TrainMapPoint = { x: number; y: number; angle: number };
-type StableTrainPlacement = TrainMapPoint & { updatedAt: number };
+type TrainObservation = RouteDistancePoint;
+type StableTrainPlacement = TrainObservation & {
+  updatedAt: number;
+  routeId: string;
+  line: LineLabel;
+  destination: string;
+  confidence: number;
+  speed: number;
+};
 
 type BartMapProps = {
   activeLine: LineLabel | 'all';
@@ -45,6 +55,17 @@ type BartMapProps = {
 
 const MIN_VIEW_W = 260;
 const MAX_VIEW_W = MAP_WIDTH;
+const BASEMAP_HREF = '/assets/bay-map-texture-3x.jpg';
+const BASEMAP_X = -260;
+const BASEMAP_Y = -116;
+const BASEMAP_W = MAP_WIDTH + 520;
+const BASEMAP_H = 1327;
+const BASEMAP_BACKFILL_W = BASEMAP_W + 2200;
+const BASEMAP_BACKFILL_H = (BASEMAP_BACKFILL_W * BASEMAP_H) / BASEMAP_W;
+const BASEMAP_BACKFILL_X = BASEMAP_X - (BASEMAP_BACKFILL_W - BASEMAP_W) / 2;
+const BASEMAP_BACKFILL_Y = BASEMAP_Y - (BASEMAP_BACKFILL_H - BASEMAP_H) / 2;
+const PAN_BLEED_X = 36;
+const PAN_BLEED_Y = 36;
 export function BartMap({
   activeLine,
   trains,
@@ -107,7 +128,7 @@ export function BartMap({
     } else {
       const trainPoint = trainPoints.find((item) => item.train.id === focusRequest.trainId);
       if (trainPoint) {
-        const nextView = viewForBounds(pointBounds(trainPoint.point.x, trainPoint.point.y, 180), viewport.width, viewport.height, 'focus');
+        const nextView = viewForBounds(pointBounds(trainPoint.point.x, trainPoint.point.y, 360), viewport.width, viewport.height, 'focus');
         setView(viewport.width < 520 ? clampView({ ...nextView, y: nextView.y + nextView.h * 0.13 }) : nextView);
       }
     }
@@ -227,9 +248,10 @@ export function BartMap({
             </feMerge>
           </filter>
         </defs>
-        <rect className="map-base" x="-260" y="-150" width={MAP_WIDTH + 520} height={MAP_HEIGHT + 460} />
-        <image className="bay-texture" href="/assets/bay-map-texture.png" x="-260" y="-116" width={MAP_WIDTH + 520} height={1327} preserveAspectRatio="xMidYMid meet" />
-        <rect className="basemap-wash" x="-260" y="-150" width={MAP_WIDTH + 520} height={MAP_HEIGHT + 460} />
+        <rect className="map-base" x={BASEMAP_BACKFILL_X} y={BASEMAP_BACKFILL_Y} width={BASEMAP_BACKFILL_W} height={BASEMAP_BACKFILL_H} />
+        <image className="bay-texture-backfill" href={BASEMAP_HREF} x={BASEMAP_BACKFILL_X} y={BASEMAP_BACKFILL_Y} width={BASEMAP_BACKFILL_W} height={BASEMAP_BACKFILL_H} preserveAspectRatio="xMidYMid meet" />
+        <image className="bay-texture" href={BASEMAP_HREF} x={BASEMAP_X} y={BASEMAP_Y} width={BASEMAP_W} height={BASEMAP_H} preserveAspectRatio="xMidYMid meet" />
+        <rect className="basemap-wash" x={BASEMAP_BACKFILL_X} y={BASEMAP_BACKFILL_Y} width={BASEMAP_BACKFILL_W} height={BASEMAP_BACKFILL_H} />
         <path className="bay-crossing" d="M418 463 C512 440 594 425 681 432" />
         <text className="region-label" x="242" y="484">San Francisco</text>
         <text className="region-label" x="720" y="375">Oakland</text>
@@ -262,6 +284,62 @@ export function BartMap({
           {visibleDisplayRoutes.map(({ route, path }) => (
               <path key={`highlight-${route.id}`} className="route-highlight" d={path} />
             ))}
+        </g>
+        <g className="station-layer">
+          {networkGeometry.stations
+            .filter((station) => station.lines.some((line) => visibleLines.has(line)))
+            .map((station) => {
+              const selected = selectedStation === station.abbr;
+              const transfer = activeLine === 'all' && station.marker.transfer && station.marker.length > 0;
+              const terminal = TERMINAL_STATIONS.has(station.abbr);
+              const showLabel = selected || PRIORITY_LABEL_STATIONS.has(station.abbr);
+              const markerLength = station.marker.length;
+              const point = activeLine === 'all' ? station.point : stationPointForLine(station.abbr, activeLine) || station.point;
+              return (
+                <g key={station.abbr} className="station-item">
+                  <g
+                    className={`station-marker ${selected ? 'selected' : ''} ${transfer ? 'transfer shared' : ''} ${terminal ? 'terminal' : ''}`}
+                    data-testid={`station-marker-${station.abbr}`}
+                    data-station-marker
+                    role="button"
+                    tabIndex={selected ? 0 : -1}
+                    aria-label={`${station.name} station`}
+                    transform={`translate(${point.x} ${point.y}) rotate(${transfer ? station.marker.angle : 0})`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectStation(station.abbr);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onPointerUp={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => handleKeyActivate(event, () => onSelectStation(station.abbr))}
+                  >
+                    {transfer ? (
+                      <>
+                        <rect className="station-shared-hit" x={-markerLength / 2 - 7} y="-13" width={markerLength + 14} height="26" rx="13" />
+                        <rect className="station-shared-halo" x={-markerLength / 2 - 2.5} y="-6.8" width={markerLength + 5} height="13.6" rx="6.8" />
+                        <rect className="station-shared-body" x={-markerLength / 2} y="-4.4" width={markerLength} height="8.8" rx="4.4" />
+                      </>
+                    ) : (
+                      <>
+                        <circle className="station-hit" r="18" />
+                        <circle className="station-halo" r={terminal ? 10.7 : 7.1} />
+                        <circle className="station-outer" r={terminal ? 7.8 : 4.7} />
+                      </>
+                    )}
+                  </g>
+                  {showLabel ? (
+                    <text
+                      className="station-label"
+                      x={point.x + labelOffset(station.abbr).x}
+                      y={point.y + labelOffset(station.abbr).y}
+                      filter="url(#mapLabelHalo)"
+                    >
+                      {shortStationName(station)}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
         </g>
         <g className="train-layer">
           {trainPoints.map(({ train, point, offset }) => {
@@ -298,51 +376,6 @@ export function BartMap({
             );
           })}
         </g>
-        <g className="station-layer">
-          {networkGeometry.stations
-            .filter((station) => station.lines.some((line) => visibleLines.has(line)))
-            .map((station) => {
-              const selected = selectedStation === station.abbr;
-              const transfer = TRANSFER_STATIONS.has(station.abbr);
-              const terminal = TERMINAL_STATIONS.has(station.abbr);
-              const showLabel = selected || PRIORITY_LABEL_STATIONS.has(station.abbr);
-              return (
-                <g key={station.abbr} className="station-item">
-                  <g
-                    className={`station-marker ${selected ? 'selected' : ''} ${transfer ? 'transfer' : ''} ${terminal ? 'terminal' : ''}`}
-                    data-testid={`station-marker-${station.abbr}`}
-                    data-station-marker
-                    role="button"
-                    tabIndex={selected ? 0 : -1}
-                    aria-label={`${station.name} station`}
-                    transform={`translate(${station.point.x} ${station.point.y})`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onSelectStation(station.abbr);
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onPointerUp={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => handleKeyActivate(event, () => onSelectStation(station.abbr))}
-                  >
-                    <circle className="station-hit" r="18" />
-                    <circle className="station-halo" r={terminal ? 10.7 : transfer ? 9.1 : 7.1} />
-                    <circle className="station-outer" r={terminal ? 7.8 : transfer ? 6.5 : 4.7} />
-                    {transfer ? <circle className="station-inner" r="2.6" /> : null}
-                  </g>
-                  {showLabel ? (
-                    <text
-                      className="station-label"
-                      x={station.point.x + labelOffset(station.abbr).x}
-                      y={station.point.y + labelOffset(station.abbr).y}
-                      filter="url(#mapLabelHalo)"
-                    >
-                      {shortStationName(station)}
-                    </text>
-                  ) : null}
-                </g>
-              );
-            })}
-        </g>
       </svg>
 
       <div className="map-toolbar" aria-label="Map controls" data-testid="map-toolbar">
@@ -376,24 +409,21 @@ function placeTrains(
   overviewMode: boolean,
   placementCache: Map<string, StableTrainPlacement>,
 ) {
+  const claimedKeys = new Set<string>();
   const raw = trains
     .map((train) => {
-      const progress = visualTrainProgress(currentProgress(train, now));
-      let point =
-        routePointForStops(train.routeId, train.prevStop, train.nextStop, progress, DISPLAY_ROUTE_IDS) ||
-        routePoint(train.routeId, train.prevIdx, train.nextIdx, progress);
-      if (point && trainOverlapsStop(point, train.prevStop, train.nextStop)) {
-        point =
-          routePointForStops(train.routeId, train.prevStop, train.nextStop, 0.5, DISPLAY_ROUTE_IDS) ||
-          routePoint(train.routeId, train.prevIdx, train.nextIdx, 0.5);
-      }
-      return point ? { train, point: stabilizeTrainPoint(train, point, now, placementCache) } : null;
+      const progress = currentProgress(train, now);
+      const observation =
+        routeDistancePointForStops(train.routeId, train.prevStop, train.nextStop, progress, DISPLAY_ROUTE_IDS) ||
+        routeDistancePoint(train.routeId, train.prevIdx, train.nextIdx, progress);
+      if (!observation) return null;
+      const placement = stabilizeTrainPoint(train, observation, now, placementCache, claimedKeys);
+      return { train, point: placement.point, cacheKey: placement.cacheKey };
     })
-    .filter(Boolean) as Array<{ train: InferredTrain; point: TrainMapPoint }>;
+    .filter(Boolean) as Array<{ train: InferredTrain; point: TrainMapPoint; cacheKey: string }>;
 
-  const activeKeys = new Set(raw.map(({ train }) => stableTrainKey(train)));
   for (const [key, value] of placementCache.entries()) {
-    if (!activeKeys.has(key) || now - value.updatedAt > 90_000) placementCache.delete(key);
+    if (!claimedKeys.has(key) || now - value.updatedAt > 90_000) placementCache.delete(key);
   }
 
   const buckets = new Map<string, typeof raw>();
@@ -403,8 +433,6 @@ function placeTrains(
     buckets.get(key)?.push(item);
   }
 
-  const perBucket = overviewMode ? 3 : 5;
-  const globalLimit = overviewMode ? 34 : 60;
   const placed = [...buckets.values()].flatMap((bucket) =>
     bucket
       .sort((a, b) => {
@@ -412,7 +440,6 @@ function placeTrains(
         if (b.train.id === selectedTrainId) return 1;
         return b.train.confidence - a.train.confidence;
       })
-      .slice(0, Math.min(perBucket, bucket.length))
       .map((item, index, visible) => {
         const spread = spreadFor(index, visible.length, overviewMode);
         const radians = ((item.point.angle + 90) * Math.PI) / 180;
@@ -431,8 +458,7 @@ function placeTrains(
       if (a.train.id === selectedTrainId) return -1;
       if (b.train.id === selectedTrainId) return 1;
       return b.train.confidence - a.train.confidence;
-    })
-    .slice(0, globalLimit);
+    });
 }
 
 function viewForBounds(bounds: Bounds, width: number, height: number, mode: 'network' | 'focus' = 'network'): ViewBox {
@@ -448,12 +474,22 @@ function pointBounds(x: number, y: number, radius: number): Bounds {
 function clampView(view: ViewBox): ViewBox {
   const w = Math.max(MIN_VIEW_W, Math.min(MAX_VIEW_W, view.w));
   const h = Math.max(1, view.h);
+  const minX = BASEMAP_BACKFILL_X - PAN_BLEED_X;
+  const maxX = BASEMAP_BACKFILL_X + BASEMAP_BACKFILL_W + PAN_BLEED_X;
+  const minY = BASEMAP_BACKFILL_Y - PAN_BLEED_Y;
+  const maxY = BASEMAP_BACKFILL_Y + BASEMAP_BACKFILL_H + PAN_BLEED_Y;
   return {
-    x: Math.max(-100, Math.min(MAP_WIDTH - w + 100, view.x)),
-    y: Math.max(-900, Math.min(MAP_HEIGHT - h + 300, view.y)),
+    x: clampAxis(view.x, w, minX, maxX),
+    y: clampAxis(view.y, h, minY, maxY),
     w,
     h,
   };
+}
+
+function clampAxis(start: number, size: number, min: number, max: number): number {
+  const maxStart = max - size;
+  if (maxStart < min) return min + (max - min - size) / 2;
+  return Math.max(min, Math.min(maxStart, start));
 }
 
 function clientToWorld(clientX: number, clientY: number, svg: SVGSVGElement | null, view: ViewBox) {
@@ -471,56 +507,147 @@ function center(view: ViewBox) {
 
 function spreadFor(index: number, count: number, overviewMode: boolean): number {
   if (count <= 1) return 0;
-  return (overviewMode ? [0, 0, 0] : [0, -4, 4, -7, 7])[index] || 0;
-}
-
-function visualTrainProgress(progress: number): number {
-  if (!Number.isFinite(progress)) return 0.5;
-  return Math.min(0.76, Math.max(0.24, progress));
+  if (index === 0) return 0;
+  const spacing = overviewMode ? 4.2 : 4.8;
+  const magnitude = Math.ceil(index / 2) * spacing;
+  return index % 2 === 0 ? magnitude : -magnitude;
 }
 
 function stabilizeTrainPoint(
   train: InferredTrain,
-  rawPoint: TrainMapPoint,
+  observation: TrainObservation,
   now: number,
   placementCache: Map<string, StableTrainPlacement>,
-): TrainMapPoint {
+  claimedKeys: Set<string>,
+): { point: TrainMapPoint; cacheKey: string } {
   const key = stableTrainKey(train);
-  const previous = placementCache.get(key);
-  if (!previous) {
-    placementCache.set(key, { ...rawPoint, updatedAt: now });
-    return rawPoint;
+  const sourceKey = findCompatibleTrackKey(train, observation, key, placementCache, claimedKeys, now);
+  const previous = placementCache.get(sourceKey);
+  if (!previous || !sameTrack(previous, observation) || now - previous.updatedAt > 90_000) {
+    const point = projectObservation(observation) || observation;
+    placementCache.set(key, {
+      ...observation,
+      ...point,
+      updatedAt: now,
+      routeId: train.routeId,
+      line: train.line,
+      destination: train.destination,
+      confidence: train.confidence,
+      speed: 0,
+    });
+    if (sourceKey !== key) placementCache.delete(sourceKey);
+    claimedKeys.add(key);
+    return { point, cacheKey: key };
   }
 
   const elapsedSec = Math.max(0.25, Math.min(8, (now - previous.updatedAt) / 1000));
-  const distance = Math.hypot(rawPoint.x - previous.x, rawPoint.y - previous.y);
-  if (distance > 260) {
-    placementCache.set(key, { ...rawPoint, updatedAt: now });
-    return rawPoint;
+  const signedDelta = (observation.distance - previous.distance) * previous.direction;
+  const absoluteDelta = Math.abs(observation.distance - previous.distance);
+  if (absoluteDelta > 330) {
+    const point = projectObservation(observation) || observation;
+    placementCache.set(key, {
+      ...observation,
+      ...point,
+      updatedAt: now,
+      routeId: train.routeId,
+      line: train.line,
+      destination: train.destination,
+      confidence: train.confidence,
+      speed: 0,
+    });
+    if (sourceKey !== key) placementCache.delete(sourceKey);
+    claimedKeys.add(key);
+    return { point, cacheKey: key };
   }
 
-  const maxStep = 10 + elapsedSec * 5.8;
-  const ratio = distance > maxStep ? maxStep / distance : 1;
-  const next = {
-    x: previous.x + (rawPoint.x - previous.x) * ratio,
-    y: previous.y + (rawPoint.y - previous.y) * ratio,
-    angle: stabilizeAngle(rawPoint.angle, previous.angle, elapsedSec),
+  const backwardTolerance = 18;
+  const hasStrongerEvidence = train.confidence >= previous.confidence + 0.18;
+  const predictedDistance = previous.distance + previous.direction * Math.min(Math.max(previous.speed, 0.08), 1.8) * elapsedSec;
+  let nextDistance = observation.distance;
+  let acceptedDelta = signedDelta;
+
+  if (signedDelta < -backwardTolerance && !hasStrongerEvidence) {
+    nextDistance = predictedDistance;
+    acceptedDelta = Math.max(0, (nextDistance - previous.distance) * previous.direction);
+  } else if (signedDelta < -backwardTolerance) {
+    nextDistance = previous.distance + (observation.distance - previous.distance) * 0.35;
+    acceptedDelta = Math.max(0, (nextDistance - previous.distance) * previous.direction);
+  } else {
+    const maxForward = 74 + elapsedSec * 12;
+    if (signedDelta > maxForward) {
+      nextDistance = previous.distance + previous.direction * maxForward;
+      acceptedDelta = maxForward;
+    }
+  }
+
+  nextDistance = clamp(nextDistance, 0, observation.totalDistance);
+  const snapped = routePointAtDistance(observation.displayRouteId, nextDistance, observation.direction) || observation;
+  const point = {
+    x: snapped.x,
+    y: snapped.y,
+    angle: stabilizeAngle(snapped.angle, previous.angle, elapsedSec),
   };
-  placementCache.set(key, { ...next, updatedAt: now });
-  return next;
+  const observedSpeed = Math.max(0, acceptedDelta / elapsedSec);
+  placementCache.set(key, {
+    ...observation,
+    ...point,
+    distance: nextDistance,
+    updatedAt: now,
+    routeId: train.routeId,
+    line: train.line,
+    destination: train.destination,
+    confidence: train.confidence,
+    speed: previous.speed * 0.62 + observedSpeed * 0.38,
+  });
+  if (sourceKey !== key) placementCache.delete(sourceKey);
+  claimedKeys.add(key);
+  return { point, cacheKey: key };
+}
+
+function projectObservation(observation: TrainObservation): TrainMapPoint | null {
+  return routePointAtDistance(observation.displayRouteId, observation.distance, observation.direction);
+}
+
+function findCompatibleTrackKey(
+  train: InferredTrain,
+  observation: TrainObservation,
+  key: string,
+  placementCache: Map<string, StableTrainPlacement>,
+  claimedKeys: Set<string>,
+  now: number,
+): string {
+  const exact = placementCache.get(key);
+  const exactGap = exact && sameTrack(exact, observation) ? Math.abs(exact.distance - observation.distance) : Infinity;
+  if (exact && !claimedKeys.has(key) && exactGap < 180) return key;
+
+  let bestKey = exact && !claimedKeys.has(key) ? key : '';
+  let bestGap = exactGap;
+  for (const [candidateKey, placement] of placementCache.entries()) {
+    if (candidateKey === key || claimedKeys.has(candidateKey) || now - placement.updatedAt > 90_000) continue;
+    if (placement.line !== train.line || placement.destination !== train.destination) continue;
+    if (!sameTrack(placement, observation)) continue;
+    const gap = Math.abs(placement.distance - observation.distance);
+    if (gap < Math.min(bestGap, 180)) {
+      bestKey = candidateKey;
+      bestGap = gap;
+    }
+  }
+  return bestKey || key;
+}
+
+function sameTrack(previous: StableTrainPlacement, observation: TrainObservation): boolean {
+  return previous.displayRouteId === observation.displayRouteId && previous.direction === observation.direction;
 }
 
 function stableTrainKey(train: InferredTrain): string {
   const idParts = train.id.split(':');
   const cluster = idParts[idParts.length - 1] || '0';
-  return [train.routeId, train.destination, cluster, train.direction, train.platform || ''].join(':');
+  return [train.routeId, train.destination, train.direction || 'dir', cluster].join(':');
 }
 
 function stabilizeAngle(rawAngle: number, previousAngle: number, elapsedSec: number): number {
-  const direct = nearestEquivalentAngle(rawAngle, previousAngle);
-  const reversed = nearestEquivalentAngle(rawAngle + 180, previousAngle);
-  const candidate = Math.abs(reversed - previousAngle) + 24 < Math.abs(direct - previousAngle) ? reversed : direct;
-  const maxTurn = 24 + elapsedSec * 20;
+  const candidate = nearestEquivalentAngle(rawAngle, previousAngle);
+  const maxTurn = 40 + elapsedSec * 35;
   return previousAngle + clamp(candidate - previousAngle, -maxTurn, maxTurn);
 }
 
@@ -529,13 +656,6 @@ function nearestEquivalentAngle(angle: number, reference: number): number {
   while (adjusted - reference > 180) adjusted -= 360;
   while (adjusted - reference < -180) adjusted += 360;
   return adjusted;
-}
-
-function trainOverlapsStop(point: { x: number; y: number }, prevStop: string, nextStop: string): boolean {
-  const stops = [prevStop, nextStop]
-    .map((abbr) => networkGeometry.stationByAbbr.get(abbr)?.point)
-    .filter(Boolean) as Array<{ x: number; y: number }>;
-  return stops.some((stop) => Math.hypot(point.x - stop.x, point.y - stop.y) < 26);
 }
 
 function clamp(value: number, min: number, max: number): number {

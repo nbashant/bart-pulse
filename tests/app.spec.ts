@@ -82,6 +82,23 @@ test.describe('BART Track Live interactions', () => {
     await expect(page.getByTestId('all-lines-button')).toHaveClass(/selected/);
   });
 
+  test('all-lines map keeps every inferred train visible for each line', async ({ page }) => {
+    await page.goto(`${base}&scenario=crowded`, { waitUntil: 'networkidle' });
+    await expect(page.getByTestId('status-chip')).toBeVisible();
+
+    for (const line of lines) {
+      const expectedCount = Number(await page.getByTestId(`line-filter-${line}`).locator('strong').innerText());
+      await expect(page.locator(`[data-train-marker][aria-label^="${line} line train"]`)).toHaveCount(expectedCount);
+
+      await page.getByTestId(`line-filter-${line}`).click();
+      await expect(page.getByTestId(`line-filter-${line}`)).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('[data-train-marker]')).toHaveCount(expectedCount);
+
+      await page.getByTestId('all-lines-button').click();
+      await expect(page.getByTestId('all-lines-button')).toHaveAttribute('aria-pressed', 'true');
+    }
+  });
+
   test('line focus composes with station selection, train selection, and fit reset', async ({ page }) => {
     await gotoDemo(page);
     await page.getByTestId('line-filter-Yellow').click();

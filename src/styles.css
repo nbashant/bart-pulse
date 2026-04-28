@@ -94,6 +94,11 @@ input:focus-visible,
   pointer-events: none;
 }
 
+.bay-texture-backfill {
+  opacity: 0.86;
+  pointer-events: none;
+}
+
 .basemap-wash {
   fill: rgba(255, 253, 246, 0.08);
   pointer-events: none;
@@ -119,7 +124,7 @@ input:focus-visible,
 
 .route-corridor {
   fill: none;
-  stroke-width: 18;
+  stroke-width: 16;
   stroke-linecap: round;
   stroke-linejoin: round;
   opacity: 0.08;
@@ -129,7 +134,7 @@ input:focus-visible,
 .route-bed {
   fill: none;
   stroke: rgba(2, 7, 12, 0.9);
-  stroke-width: 12.5;
+  stroke-width: 10.8;
   stroke-linecap: round;
   stroke-linejoin: round;
   filter: none;
@@ -137,7 +142,7 @@ input:focus-visible,
 
 .route-line {
   fill: none;
-  stroke-width: 6.2;
+  stroke-width: 5.8;
   stroke-linecap: round;
   stroke-linejoin: round;
   opacity: 0.97;
@@ -172,6 +177,11 @@ input:focus-visible,
   pointer-events: all;
 }
 
+.station-shared-hit {
+  fill: rgba(255, 255, 255, 0.001);
+  pointer-events: all;
+}
+
 .train-hit {
   fill: rgba(255, 255, 255, 0.001);
   pointer-events: all;
@@ -202,6 +212,27 @@ input:focus-visible,
     r 160ms ease;
 }
 
+.station-shared-halo {
+  fill: rgba(5, 11, 17, 0.92);
+  stroke: rgba(230, 244, 246, 0.16);
+  stroke-width: 0.7;
+  pointer-events: none;
+  transition:
+    fill 160ms ease,
+    stroke 160ms ease;
+}
+
+.station-shared-body {
+  fill: #f5fbfa;
+  stroke: #061018;
+  stroke-width: 1.65;
+  pointer-events: none;
+  transition:
+    fill 160ms ease,
+    stroke 160ms ease,
+    stroke-width 160ms ease;
+}
+
 .station-marker.terminal .station-outer {
   r: 7.6px;
 }
@@ -217,18 +248,22 @@ input:focus-visible,
 }
 
 .station-marker:hover .station-outer,
-.station-marker:focus-visible .station-outer {
+.station-marker:focus-visible .station-outer,
+.station-marker:hover .station-shared-body,
+.station-marker:focus-visible .station-shared-body {
   fill: #f8d94a;
 }
 
-.station-marker.selected .station-outer {
+.station-marker.selected .station-outer,
+.station-marker.selected .station-shared-body {
   fill: #fff7c4;
   stroke: #f8d94a;
-  stroke-width: 2.8;
-  filter: drop-shadow(0 0 5px rgba(248, 217, 74, 0.56));
+  stroke-width: 2.3;
+  filter: drop-shadow(0 0 4px rgba(248, 217, 74, 0.48));
 }
 
-.station-marker.selected .station-halo {
+.station-marker.selected .station-halo,
+.station-marker.selected .station-shared-halo {
   fill: rgba(248, 217, 74, 0.2);
   stroke: rgba(255, 242, 160, 0.56);
 }

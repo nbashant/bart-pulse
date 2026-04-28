@@ -2,19 +2,10 @@ import type { Point } from './projection';
 
 export type PathPoint = Point & { angle: number };
 
-export function offsetPolyline(points: Point[], offset: number): Point[] {
-  if (!offset || points.length < 2) return points;
-  return points.map((point, index) => {
-    const prev = points[Math.max(0, index - 1)];
-    const next = points[Math.min(points.length - 1, index + 1)];
-    const dx = next.x - prev.x;
-    const dy = next.y - prev.y;
-    const len = Math.hypot(dx, dy) || 1;
-    return {
-      x: point.x + (-dy / len) * offset,
-      y: point.y + (dx / len) * offset,
-    };
-  });
+export function offsetPolyline(points: Point[], offset: number | number[]): Point[] {
+  if (points.length < 2) return points;
+  if (!Array.isArray(offset) && !offset) return points;
+  return points.map((point, index) => offsetPoint(points, index, offsetAt(offset, index)));
 }
 
 export function svgPath(points: Point[]): string {
@@ -29,7 +20,15 @@ export function pointAlong(points: Point[], progress: number): PathPoint | null 
   const lengths = cumulativeLengths(points);
   const total = lengths[lengths.length - 1];
   if (total <= 0) return { ...points[0], angle: 0 };
-  const target = clamp(progress, 0, 1) * total;
+  return pointAtDistance(points, clamp(progress, 0, 1) * total);
+}
+
+export function pointAtDistance(points: Point[], distance: number): PathPoint | null {
+  if (points.length < 2) return null;
+  const lengths = cumulativeLengths(points);
+  const total = lengths[lengths.length - 1];
+  if (total <= 0) return { ...points[0], angle: 0 };
+  const target = clamp(distance, 0, total);
   let index = 1;
   while (index < lengths.length && lengths[index] < target) index += 1;
   const prev = points[index - 1];
@@ -85,6 +84,58 @@ function squaredDistance(a: Point, b: Point): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function offsetAt(offset: number | number[], index: number): number {
+  return Array.isArray(offset) ? offset[Math.min(index, offset.length - 1)] || 0 : offset;
+}
+
+function offsetPoint(points: Point[], index: number, offset: number): Point {
+  const point = points[index];
+  const previous = points[index - 1];
+  const next = points[index + 1];
+
+  if (!previous && next) return offsetFromSegment(point, next, offset);
+  if (previous && !next) return offsetFromSegment(previous, point, offset, point);
+  if (!previous || !next) return point;
+
+  const prevOffsetStart = offsetFromSegment(previous, point, offset);
+  const prevOffsetEnd = offsetFromSegment(previous, point, offset, point);
+  const nextOffsetStart = offsetFromSegment(point, next, offset);
+  const nextOffsetEnd = offsetFromSegment(point, next, offset, next);
+  const intersection = lineIntersection(prevOffsetStart, prevOffsetEnd, nextOffsetStart, nextOffsetEnd);
+
+  if (intersection && Math.hypot(intersection.x - point.x, intersection.y - point.y) <= Math.abs(offset) * 4) {
+    return intersection;
+  }
+
+  const fallback = offsetFromSegment(previous, next, offset, point);
+  return fallback;
+}
+
+function offsetFromSegment(start: Point, end: Point, offset: number, point = start): Point {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy) || 1;
+  return {
+    x: point.x + (-dy / len) * offset,
+    y: point.y + (dx / len) * offset,
+  };
+}
+
+function lineIntersection(aStart: Point, aEnd: Point, bStart: Point, bEnd: Point): Point | null {
+  const aDx = aEnd.x - aStart.x;
+  const aDy = aEnd.y - aStart.y;
+  const bDx = bEnd.x - bStart.x;
+  const bDy = bEnd.y - bStart.y;
+  const determinant = aDx * bDy - aDy * bDx;
+  if (Math.abs(determinant) < 0.0001) return null;
+
+  const t = ((bStart.x - aStart.x) * bDy - (bStart.y - aStart.y) * bDx) / determinant;
+  return {
+    x: aStart.x + t * aDx,
+    y: aStart.y + t * aDy,
+  };
 }
 
 function round(value: number): number {
