@@ -40,7 +40,7 @@ This repo includes `render.yaml` for a free Render web service.
 Render settings:
 
 ```text
-Build command: npm ci && npm run build
+Build command: npm ci --include=dev && npm run build && npm prune --omit=dev
 Start command: npm start
 ```
 
